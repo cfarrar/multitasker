@@ -1,0 +1,145 @@
+
+	NAME	mtint
+
+	RSEG	RCODE(0)
+	RSEG	NO_INIT(0)
+	RSEG	UDATA0(0)
+
+	PUBLIC	mt_prepare_stack_image
+	PUBLIC	mt_jump_into_task
+        PUBLIC  mt_suspend_execution
+	PUBLIC	mt_get_interrupt_status
+	PUBLIC	mt_set_interrupt_status
+        PUBLIC  mt_system_stop
+
+        EXTERN  ?CL64180B_4_04_L00
+	EXTERN	?ENT_PARM_DIRECT_L09
+	EXTERN	?LEAVE_DIRECT_L09
+
+	EXTERN	CBRDEF
+
+        EXTERN  mt_task_halt
+
+	RSEG	UDATA0
+
+mt_task_stack_ptr:			; static ubyte *mt_task_stack_ptr;
+	DEFS	2
+
+
+	RSEG	RCODE
+
+mt_prepare_stack_image: 		; non_banked void mt_prepare_stack_image( ubyte **stack_pointer, void (*task) (void) ) {
+	CALL	?ENT_PARM_DIRECT_L09	;   // save registers that cannot be currupted
+	PUSH	DE			;   push( stack_pointer );
+	LD	HL,0			;   BC = SP;
+	ADD	HL,SP
+	LD	B,H
+	LD	C,L
+	EX	DE,HL			;   SP = *stack_pointer;       		// switch to the tasks stack
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	EX	DE,HL
+	LD	SP,HL
+        LD      HL,LWRD mt_task_halt       ;   push( mt_task_halt.offset );
+	PUSH	HL
+        LD      A,BYTE3 mt_task_halt       ;   push( mt_task_halt.bank );
+	PUSH	AF
+	LD	L,(IX+8)		;   HL = task.offset;			// get the task address
+	LD	H,(IX+9)
+	LD	A,(IX+10)		;   AF = task.bank;
+	PUSH	HL			;   push( HL );				// put PC (task start address) on the stack
+	LD	HL,0			;   HL = 0;
+	PUSH	HL			;   push( HL );				// put dummy IY image on stack
+	PUSH	HL			;   push( HL );				// put dummy IX image on stack
+	PUSH	HL			;   push( HL );				// put dummy HL image on stack
+	PUSH	HL			;   push( HL );				// put dummy AF image on stack
+	PUSH	AF			;   push( AF );				// put the tasks bank on the stack
+	LD	A,0			;   interrupt_enable_status = OFF;	// put the tasks interrupt enable status on the stack
+	ADD	A,0
+	PUSH	AF			;   push( interrupt_enable_status );
+	LD	HL,0			;   DE = SP;				// save the tasks current stack pointer
+	ADD	HL,SP
+	EX	DE,HL
+	LD	H,B			;   SP = BC;
+	LD	L,C
+	LD	SP,HL
+	POP	HL			;   stack_pointer = pop();		// Recover pointer to task stack pointer
+	LD	(HL),E			;   *stack_pointer.offset = DE;		// put task stack position in stack pointer
+	INC	HL
+	LD	(HL),D
+	JP	?LEAVE_DIRECT_L09	; } // RESTORE REGISTERS AND EXIT
+
+
+mt_jump_into_task:			; non_banked void mt_jump_into_task( ubyte **stack_pointer ) {
+	PUSH	IY			;   push( IY );				/* SAVE THE SUB TASK registerS */
+	PUSH	IX			;   push( IX );
+	PUSH	BC			;   push( BC );
+	IN0	A,(BBR)			;   push( BBR );
+	PUSH	AF
+	PUSH	DE			;   push( stack_pointer );
+	LD	(mt_task_stack_ptr),SP	;   mt_task_stack_ptr = SP;		/* SAVE SP FOR WEN WE COME BACK TO THE MAIN PROG */
+        EX      DE,HL                   ;   SP = stack_pointer->offset;         // switch to the tasks stack
+        LD      E,(HL)
+        INC     HL
+        LD      D,(HL)
+        EX      DE,HL
+        LD      SP,HL
+	POP	AF			;   interrupt_enable_status = pop();
+	JP	PO,JIT001		;   if ( interrupt_enable_status == ON ) {
+	EI				;   	enable_interrupt();
+JIT001:					;   }
+	POP	AF			;   BBR = pop();			/* GET THE SUB TASK registerS */
+	OUT0	(BBR),A
+	POP	BC			;   BC = pop();
+	POP	DE			;   DE = pop();
+	POP	IX			;   IX = pop();
+	POP	IY			;   IY = pop();
+	RET				;   PC = pop();				/* JUMP INTO THE SUB TASK */
+					; }
+
+
+mt_suspend_execution:                   ; non_banked void mt_suspend_execution( void );
+	PUSH	IY			;   push( IY );				/* SAVE THE SUB TASK registerS */
+	PUSH	IX			;   push( IX );
+	PUSH	DE			;   push( DE );
+	PUSH	BC			;   push( BC );
+	IN0	A,(BBR)			;   push( BBR );
+	PUSH	AF
+	LD	A,I			;   interrupt_enable_status = mt_get_interrupt_enable_status();
+	PUSH	AF			;   push( interrupt_enable_status );
+	DI				;   disable_interrupts();
+	LD	HL,0			;   DE = SP;				/* SAVE THE SUB TASK STACK POINTER */
+	ADD	HL,SP
+	EX	DE,HL
+	LD	SP,(mt_task_stack_ptr)	;   SP = mt_task_stack_ptr;		/* SWITCH BACK TO THE MAIN PROG STACK */
+	POP	HL			;   stack_pointer = pop();
+	LD	(HL),E			;   stack_pointer->offset = DE;		/* UPDATE TASK CONTROL BLOCK STACK POINTER */
+	INC	HL
+	LD	(HL),D
+	POP	AF			;   BBR = pop();
+	OUT0	(BBR),A
+	POP	BC			;   BC = pop();
+	POP	IX			;   IX = pop();
+	POP	IY			;   IY = pop();
+	RET				; }
+
+
+mt_get_interrupt_status:		; non_banked ubyte mt_get_interrupt_status( void ) {
+	LD	A,I			;	if ( interrupts_enable == ON ) {
+        JP      PO,?0001
+	LD	A,1			;		return( TRUE );
+	RET
+?0001:					;	}
+        XOR     A                       ;       return( FALSE );
+	RET				; }
+
+
+mt_set_interrupt_status:                ; non_banked void mt_set_interrupt_status( ubyte status ) {
+        DI                              ;       disable_interrupt
+        RRC     E                       ;       if ( ! status ) return;
+        RET     Z
+        EI                              ;       enable_interrupt();
+	RET				; }
+
+        END
